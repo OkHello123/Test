@@ -9,21 +9,13 @@ import time
 # ---------------------------
 BASE_URL = "https://games.roblox.com/v1/games/109983668079237/servers/Public"
 LIMIT = 100
-ROTATE_DELAY = 5     # time between proxy requests
+ROTATE_DELAY = 5
 BACKOFF = 60
 TIMEOUT = 15
 
 PROXIES_RAW = [
     "31.59.20.176:6754:tphrhwdj:my6aw2vrkipo",
     "23.95.150.145:6114:tphrhwdj:my6aw2vrkipo",
-    "198.23.239.134:6540:tphrhwdj:my6aw2vrkipo",
-    "45.38.107.97:6014:tphrhwdj:my6aw2vrkipo",
-    "107.172.163.27:6543:tphrhwdj:my6aw2vrkipo",
-    "198.105.121.200:6462:tphrhwdj:my6aw2vrkipo",
-    "64.137.96.74:6641:tphrhwdj:my6aw2vrkipo",
-    "216.10.27.159:6837:tphrhwdj:my6aw2vrkipo",
-    "23.26.71.145:5628:tphrhwdj:my6aw2vrkipo",
-    "23.229.19.94:8689:tphrhwdj:my6aw2vrkipo"
 ]
 
 headers = {
@@ -45,23 +37,29 @@ def format_proxy(p):
 # WebSocket Server
 # ---------------------------
 clients = set()
-job_ids_available = set()
+job_ids_queue = asyncio.Queue()
 job_ids_blocked = {}  # job_id -> unblock timestamp
+blocked_lock = asyncio.Lock()
 
 async def handle_request_job(ws):
     now = time.time()
-    # Remove expired blocked JobIds
-    expired = [jid for jid, ts in job_ids_blocked.items() if ts <= now]
-    for jid in expired:
-        job_ids_blocked.pop(jid)
 
-    if not job_ids_available:
+    # Remove expired blocked JobIds
+    async with blocked_lock:
+        expired = [jid for jid, ts in job_ids_blocked.items() if ts <= now]
+        for jid in expired:
+            job_ids_blocked.pop(jid)
+
+    try:
+        job_id = job_ids_queue.get_nowait()  # safe for multiple clients
+    except asyncio.QueueEmpty:
         await ws.send(json.dumps({"error": "No JobIds available"}))
         return
 
-    # Pick one JobId and block it
-    job_id = job_ids_available.pop()
-    job_ids_blocked[job_id] = now + 600  # block for 10 minutes
+    # Block the JobId for 10 minutes
+    async with blocked_lock:
+        job_ids_blocked[job_id] = now + 600
+
     await ws.send(json.dumps({"job_id": job_id}))
     print(f"Sent JobId {job_id} to client, blocked for 10 minutes")
 
@@ -86,7 +84,6 @@ async def ws_handler(ws):
                 await ws.send(json.dumps({"error": "Invalid JSON"}))
                 continue
 
-            # Only respond if client requests a JobId
             if data.get("action") == "request_job":
                 await handle_request_job(ws)
             else:
@@ -123,14 +120,13 @@ async def fetch_job_ids():
                 servers = j.get("data", [])
                 next_cursor = j.get("nextPageCursor")
 
-                # Add new JobIds only if not already available or blocked
-                new_job_ids = [s["id"] for s in servers
-                               if s["id"] not in job_ids_available
-                               and s["id"] not in job_ids_blocked]
-
-                if new_job_ids:
-                    job_ids_available.update(new_job_ids)
-                    print(f"Added JobIds: {new_job_ids}")
+                # Add new JobIds to queue if not blocked
+                async with blocked_lock:
+                    for s in servers:
+                        job_id = s["id"]
+                        if job_id not in job_ids_blocked and job_id not in job_ids_queue._queue:
+                            job_ids_queue.put_nowait(job_id)
+                            print(f"Added JobId: {job_id}")
 
                 if not next_cursor:
                     next_cursor = None
