@@ -74,10 +74,6 @@ async def ws_handler(ws):
     clients.add(ws)
     print("Client connected")
 
-    # Send current JobIds immediately on connect
-    if job_ids_available:
-        await ws.send(json.dumps({"job_ids": list(job_ids_available)}))
-
     try:
         while True:
             try:
@@ -95,6 +91,7 @@ async def ws_handler(ws):
                 await ws.send(json.dumps({"error": "Invalid JSON"}))
                 continue
 
+            # Only respond if client requests a JobId
             if data.get("action") == "request_job":
                 await handle_request_job(ws)
             else:
@@ -173,3 +170,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
