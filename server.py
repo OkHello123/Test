@@ -9,7 +9,7 @@ import time
 # ---------------------------
 BASE_URL = "https://games.roblox.com/v1/games/109983668079237/servers/Public"
 LIMIT = 100
-ROTATE_DELAY = 15
+ROTATE_DELAY = 5     # Reduced for faster testing
 BACKOFF = 60
 TIMEOUT = 15
 
@@ -61,6 +61,7 @@ async def handle_request_job(ws):
         job_ids_blocked.pop(jid)
 
     if not job_ids_available:
+        print("No JobIds available for client")
         await ws.send(json.dumps({"error": "No JobIds available"}))
         return
 
@@ -72,6 +73,11 @@ async def handle_request_job(ws):
 async def ws_handler(ws):
     clients.add(ws)
     print("Client connected")
+
+    # Send current JobIds immediately on connect
+    if job_ids_available:
+        await ws.send(json.dumps({"job_ids": list(job_ids_available)}))
+
     try:
         while True:
             try:
@@ -89,7 +95,6 @@ async def ws_handler(ws):
                 await ws.send(json.dumps({"error": "Invalid JSON"}))
                 continue
 
-            # Handle Roblox request
             if data.get("action") == "request_job":
                 await handle_request_job(ws)
             else:
