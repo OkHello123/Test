@@ -3,17 +3,17 @@ import requests
 import websockets
 import json
 import time
+from collections import deque
 
 # ---------------------------
 # Configuration
 # ---------------------------
 BASE_URL = "https://games.roblox.com/v1/games/109983668079237/servers/Public"
 LIMIT = 100
-ROTATE_DELAY = 15   # Wait between proxies
-BACKOFF = 60        # Wait if rate limited
-TIMEOUT = 15        # HTTP timeout
+ROTATE_DELAY = 15
+BACKOFF = 60
+TIMEOUT = 15
 
-# Your proxies
 PROXIES_RAW = [
     "31.59.20.176:6754:tphrhwdj:my6aw2vrkipo",
     "23.95.150.145:6114:tphrhwdj:my6aw2vrkipo",
@@ -47,6 +47,10 @@ def format_proxy(p):
 # ---------------------------
 clients = set()
 
+# JobId storage
+job_ids_available = set()
+job_ids_blocked = {}  # job_id -> unblock timestamp
+
 async def broadcast(data):
     if clients:
         message = json.dumps(data)
@@ -57,12 +61,37 @@ async def ws_handler(ws):
     print("Client connected")
     try:
         async for msg in ws:
-            # Optional: Roblox can send messages to server
-            print("Received from Roblox:", msg)
-            await ws.send(json.dumps({"echo": msg}))
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                await ws.send(json.dumps({"error": "Invalid JSON"}))
+                continue
+
+            # Roblox requests a job id
+            if data.get("action") == "request_job":
+                await handle_request_job(ws)
+            else:
+                await ws.send(json.dumps({"error": "Unknown action"}))
     finally:
         clients.remove(ws)
         print("Client disconnected")
+
+async def handle_request_job(ws):
+    now = time.time()
+    # Clean up expired blocked job ids
+    expired = [jid for jid, ts in job_ids_blocked.items() if ts <= now]
+    for jid in expired:
+        job_ids_blocked.pop(jid)
+
+    if not job_ids_available:
+        await ws.send(json.dumps({"error": "No JobIds available"}))
+        return
+
+    # Pick one job id
+    job_id = job_ids_available.pop()
+    job_ids_blocked[job_id] = now + 600  # block for 10 minutes
+    await ws.send(json.dumps({"job_id": job_id}))
+    print(f"Sent JobId {job_id} to client, blocked for 10 minutes")
 
 # ---------------------------
 # Fetch JobIds from Roblox API
@@ -71,7 +100,6 @@ async def fetch_job_ids():
     proxy_index = 0
     next_cursor = None
     dead_proxies = set()
-    sent_job_ids = set()  # Keep track of already sent JobIds
 
     while True:
         raw_proxy = PROXIES_RAW[proxy_index]
@@ -86,20 +114,23 @@ async def fetch_job_ids():
 
         try:
             r = requests.get(BASE_URL, headers=headers, proxies=proxies, params=params, timeout=TIMEOUT)
-
             if r.status_code == 200:
                 j = r.json()
                 servers = j.get("data", [])
                 next_cursor = j.get("nextPageCursor")
 
-                new_job_ids = [s["id"] for s in servers if s["id"] not in sent_job_ids]
+                # Add new JobIds if not blocked or already available
+                new_job_ids = [s["id"] for s in servers
+                               if s["id"] not in job_ids_available
+                               and s["id"] not in job_ids_blocked]
+
                 if new_job_ids:
-                    sent_job_ids.update(new_job_ids)
-                    print("Sending JobIds:", new_job_ids)
-                    await broadcast({"job_ids": new_job_ids})
+                    job_ids_available.update(new_job_ids)
+                    print(f"Added JobIds: {new_job_ids}")
+                    await broadcast({"job_ids": list(job_ids_available)})
 
                 if not next_cursor:
-                    next_cursor = None  # Reset when exhausted
+                    next_cursor = None
                 sleep = ROTATE_DELAY
 
             elif r.status_code == 429:
@@ -124,12 +155,8 @@ async def fetch_job_ids():
 # Main Async Runner
 # ---------------------------
 async def main():
-    # Start WebSocket server
     server = await websockets.serve(ws_handler, "0.0.0.0", 8080)
     print("WebSocket server running on port 8080")
-
-    # Run fetch_job_ids concurrently
     await asyncio.gather(fetch_job_ids(), server.wait_closed())
 
-# Run everything
 asyncio.run(main())
