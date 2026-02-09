@@ -9,7 +9,7 @@ import time
 # ---------------------------
 BASE_URL = "https://games.roblox.com/v1/games/109983668079237/servers/Public"
 LIMIT = 100
-ROTATE_DELAY = 5     # Reduced for faster testing
+ROTATE_DELAY = 5     # time between proxy requests
 BACKOFF = 60
 TIMEOUT = 15
 
@@ -46,12 +46,7 @@ def format_proxy(p):
 # ---------------------------
 clients = set()
 job_ids_available = set()
-job_ids_blocked = {}  # job_id -> unblock timestamp (epoch)
-
-async def broadcast(data):
-    if clients:
-        message = json.dumps(data)
-        await asyncio.gather(*[asyncio.create_task(client.send(message)) for client in clients])
+job_ids_blocked = {}  # job_id -> unblock timestamp
 
 async def handle_request_job(ws):
     now = time.time()
@@ -61,10 +56,10 @@ async def handle_request_job(ws):
         job_ids_blocked.pop(jid)
 
     if not job_ids_available:
-        print("No JobIds available for client")
         await ws.send(json.dumps({"error": "No JobIds available"}))
         return
 
+    # Pick one JobId and block it
     job_id = job_ids_available.pop()
     job_ids_blocked[job_id] = now + 600  # block for 10 minutes
     await ws.send(json.dumps({"job_id": job_id}))
@@ -128,7 +123,7 @@ async def fetch_job_ids():
                 servers = j.get("data", [])
                 next_cursor = j.get("nextPageCursor")
 
-                # Add JobIds if not already available or blocked
+                # Add new JobIds only if not already available or blocked
                 new_job_ids = [s["id"] for s in servers
                                if s["id"] not in job_ids_available
                                and s["id"] not in job_ids_blocked]
@@ -136,7 +131,6 @@ async def fetch_job_ids():
                 if new_job_ids:
                     job_ids_available.update(new_job_ids)
                     print(f"Added JobIds: {new_job_ids}")
-                    await broadcast({"job_ids": list(job_ids_available)})
 
                 if not next_cursor:
                     next_cursor = None
@@ -170,4 +164,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
