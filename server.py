@@ -3,7 +3,6 @@ import requests
 import websockets
 import json
 import time
-from collections import deque
 
 # ---------------------------
 # Configuration
@@ -35,7 +34,7 @@ headers = {
 }
 
 # ---------------------------
-# Helper Functions
+# Helpers
 # ---------------------------
 def format_proxy(p):
     ip, port, user, pwd = p.split(":")
@@ -46,39 +45,17 @@ def format_proxy(p):
 # WebSocket Server
 # ---------------------------
 clients = set()
-
-# JobId storage
 job_ids_available = set()
-job_ids_blocked = {}  # job_id -> unblock timestamp
+job_ids_blocked = {}  # job_id -> unblock timestamp (epoch)
 
 async def broadcast(data):
     if clients:
         message = json.dumps(data)
         await asyncio.gather(*[asyncio.create_task(client.send(message)) for client in clients])
 
-async def ws_handler(ws):
-    clients.add(ws)
-    print("Client connected")
-    try:
-        async for msg in ws:
-            try:
-                data = json.loads(msg)
-            except json.JSONDecodeError:
-                await ws.send(json.dumps({"error": "Invalid JSON"}))
-                continue
-
-            # Roblox requests a job id
-            if data.get("action") == "request_job":
-                await handle_request_job(ws)
-            else:
-                await ws.send(json.dumps({"error": "Unknown action"}))
-    finally:
-        clients.remove(ws)
-        print("Client disconnected")
-
 async def handle_request_job(ws):
     now = time.time()
-    # Clean up expired blocked job ids
+    # Remove expired blocked JobIds
     expired = [jid for jid, ts in job_ids_blocked.items() if ts <= now]
     for jid in expired:
         job_ids_blocked.pop(jid)
@@ -87,11 +64,40 @@ async def handle_request_job(ws):
         await ws.send(json.dumps({"error": "No JobIds available"}))
         return
 
-    # Pick one job id
     job_id = job_ids_available.pop()
     job_ids_blocked[job_id] = now + 600  # block for 10 minutes
     await ws.send(json.dumps({"job_id": job_id}))
     print(f"Sent JobId {job_id} to client, blocked for 10 minutes")
+
+async def ws_handler(ws):
+    clients.add(ws)
+    print("Client connected")
+    try:
+        while True:
+            try:
+                msg = await ws.recv()
+            except websockets.exceptions.ProtocolError as e:
+                print("Protocol error (likely Roblox masking):", e)
+                break
+            except websockets.exceptions.ConnectionClosed:
+                print("Client disconnected")
+                break
+
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                await ws.send(json.dumps({"error": "Invalid JSON"}))
+                continue
+
+            # Handle Roblox request
+            if data.get("action") == "request_job":
+                await handle_request_job(ws)
+            else:
+                await ws.send(json.dumps({"error": "Unknown action"}))
+
+    finally:
+        clients.remove(ws)
+        print("Client disconnected")
 
 # ---------------------------
 # Fetch JobIds from Roblox API
@@ -114,12 +120,13 @@ async def fetch_job_ids():
 
         try:
             r = requests.get(BASE_URL, headers=headers, proxies=proxies, params=params, timeout=TIMEOUT)
+
             if r.status_code == 200:
                 j = r.json()
                 servers = j.get("data", [])
                 next_cursor = j.get("nextPageCursor")
 
-                # Add new JobIds if not blocked or already available
+                # Add JobIds if not already available or blocked
                 new_job_ids = [s["id"] for s in servers
                                if s["id"] not in job_ids_available
                                and s["id"] not in job_ids_blocked]
@@ -159,4 +166,5 @@ async def main():
     print("WebSocket server running on port 8080")
     await asyncio.gather(fetch_job_ids(), server.wait_closed())
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
