@@ -16,6 +16,14 @@ TIMEOUT = 15
 PROXIES_RAW = [
     "31.59.20.176:6754:tphrhwdj:my6aw2vrkipo",
     "23.95.150.145:6114:tphrhwdj:my6aw2vrkipo",
+    "198.23.239.134:6540:tphrhwdj:my6aw2vrkipo",
+    "45.38.107.97:6014:tphrhwdj:my6aw2vrkipo",
+    "107.172.163.27:6543:tphrhwdj:my6aw2vrkipo",
+    "198.105.121.200:6462:tphrhwdj:my6aw2vrkipo",
+    "64.137.96.74:6641:tphrhwdj:my6aw2vrkipo",
+    "216.10.27.159:6837:tphrhwdj:my6aw2vrkipo",
+    "23.26.71.145:5628:tphrhwdj:my6aw2vrkipo",
+    "23.229.19.94:8689:tphrhwdj:my6aw2vrkipo",
 ]
 
 headers = {
@@ -207,3 +215,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
